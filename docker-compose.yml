@@ -1,0 +1,137 @@
+version: '3.9'
+services:
+  app:
+    build:
+      context: .
+      dockerfile: ./build/Dockerfile.app
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://opentelemetry-collector:4317
+      - DEVICE_TYPE=${DEVICE_TYPE}
+      - DEVICE_ID=${DEVICE_ID}
+      - HOST=${HOST}
+      - USERNAME=${USERNAME}
+      - AUTH_TOKEN=${AUTH_TOKEN}
+      - ACCESS_CODE=${ACCESS_CODE}
+
+  data-prepper:
+    image: opensearchproject/data-prepper:2.6.1
+    volumes:
+      - /data/service-map/
+      - ./configs/data-prepper/pipelines.yml:/usr/share/data-prepper/pipelines/pipelines.yml
+      - ./configs/data-prepper/data-prepper-config.yml:/usr/share/data-prepper/config/data-prepper-config.yml
+    ports:
+      - "21890:21890"
+      - "21891:21891"
+      - "21892:21892"
+    expose:
+      - "21890"
+      - "21891"
+      - "21892"
+    depends_on:
+      - opensearch-dashboards
+
+  grafana:
+    image: grafana/grafana:latest
+    deploy:
+      resources:
+        limits:
+          memory: 100M
+    restart: unless-stopped
+    environment:
+      - "GF_INSTALL_PLUGINS=grafana-opensearch-datasource"
+    volumes:
+      - ./configs/grafana/grafana.ini:/etc/grafana/grafana.ini
+      - ./configs/grafana/provisioning/:/etc/grafana/provisioning/
+    ports:
+      - "3000:3000"
+
+  opentelemetry-collector:
+    image: otel/opentelemetry-collector-contrib:0.94.0
+    deploy:
+      resources:
+        limits:
+          memory: 125M
+    restart: unless-stopped
+    command:
+      [
+        "--config=/etc/otelcol-config.yml",
+        "--config=/etc/otelcol-config-extras.yml"
+      ]
+    volumes:
+      - ./configs/otelcollector/otelcol-config.yml:/etc/otelcol-config.yml
+      - ./configs/otelcollector/otelcol-config-extras.yml:/etc/otelcol-config-extras.yml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - jaeger
+      - opensearch
+    environment:
+      ENVOY_PORT: 4317
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - --web.console.templates=/etc/prometheus/consoles
+      - --web.console.libraries=/etc/prometheus/console_libraries
+      - --storage.tsdb.retention.time=1h
+      - --config.file=/etc/prometheus/prometheus-config.yaml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+      - --web.route-prefix=/
+      - --enable-feature=exemplar-storage
+      - --enable-feature=otlp-write-receiver
+    volumes:
+      - ./configs/prometheus/prometheus-config.yaml:/etc/prometheus/prometheus-config.yaml
+    deploy:
+      resources:
+        limits:
+          memory: 300M
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    ports:
+      - "6831:6831/udp"
+      - "16686:16686"
+    restart: unless-stopped
+
+  opensearch:
+    image: opensearchproject/opensearch:latest
+    environment:
+      - cluster.name=opensearch-cluster
+      - node.name=opensearch
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "DISABLE_INSTALL_DEMO_CONFIG=true"
+      - "DISABLE_SECURITY_PLUGIN=true"
+      - "discovery.type=single-node"
+      - "plugins.query.datasources.encryption.masterkey=9822d070432c0549633c2432"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:latest
+    ports:
+      - "5601:5601"
+    expose:
+      - "5601"
+    environment:
+      - 'OPENSEARCH_HOSTS=["http://opensearch:9200"]'
+      - "DISABLE_SECURITY_DASHBOARDS_PLUGIN=true"
+
+volumes:
+  opensearch-data:
